@@ -4,6 +4,29 @@
   become: yes
   gather_facts: yes
 
+  pre_tasks:
+  - name: Stop & mask auto-apt services/timers
+    ansible.builtin.systemd:
+      name: "{{ item }}"
+      state: stopped
+      masked: yes
+    loop:
+      - apt-daily.service
+      - apt-daily.timer
+      - apt-daily-upgrade.service
+      - apt-daily-upgrade.timer
+
+    # - name: Kill any running apt/apt-get processes
+    #   ansible.builtin.shell: |
+    #     pkill -f 'apt(-get)?' || true
+    #   changed_when: false
+      
+    # - name: Wait for any apt locks to be released
+    #   ansible.builtin.wait_for:
+    #     path: /var/lib/dpkg/lock-frontend
+    #     state: absent
+    #     timeout: 300
+
   tasks:
     - name: Ensure Docker prerequisites are installed
       ansible.builtin.apt:
@@ -15,6 +38,7 @@
           - lsb-release
         state: present
         update_cache: yes
+        lock_timeout: 300
 
     - name: Add Docker GPG apt key
       ansible.builtin.apt_key:
@@ -50,15 +74,15 @@
         state: directory
         owner: root
         group: root
-        mode: '0755'
+        mode: "0755"
 
     - name: Copy application files to the remote host
       ansible.builtin.copy:
         src: ../hello-world
-        dest: /opt/app       
+        dest: /opt/app
         owner: root
         group: root
-        mode: '0755'
+        mode: "0755"
 
     - name: Build the Docker image
       ansible.builtin.docker_image:
