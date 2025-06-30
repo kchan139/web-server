@@ -2,7 +2,7 @@
 
 set -e
 
-source ../.env
+source "$(dirname "$0")"../.env
 
 curl -X GET \
   -H "Content-Type: application/json" \
