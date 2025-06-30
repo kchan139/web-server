@@ -3,32 +3,53 @@
   hosts: all
   become: yes
   gather_facts: yes
-
+  
   pre_tasks:
-  - name: Stop & mask auto-apt services/timers
-    ansible.builtin.systemd:
-      name: "{{ item }}"
-      state: stopped
-      masked: yes
-    loop:
-      - apt-daily.service
-      - apt-daily.timer
-      - apt-daily-upgrade.service
-      - apt-daily-upgrade.timer
+    - name: Stop and mask automatic update services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        masked: yes
+      loop:
+        - unattended-upgrades
+        - apt-daily.service
+        - apt-daily.timer
+        - apt-daily-upgrade.service
+        - apt-daily-upgrade.timer
+      ignore_errors: yes
 
-    # - name: Kill any running apt/apt-get processes
+    # - name: Kill any running apt/dpkg processes
     #   ansible.builtin.shell: |
-    #     pkill -f 'apt(-get)?' || true
+    #     pkill -f 'apt|dpkg|unattended-upgrade' || true
+    #     sleep 2
     #   changed_when: false
-      
-    # - name: Wait for any apt locks to be released
-    #   ansible.builtin.wait_for:
-    #     path: /var/lib/dpkg/lock-frontend
-    #     state: absent
-    #     timeout: 300
+
+    - name: Wait a moment for processes to fully stop
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Remove any stale lock files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/dpkg/lock
+        - /var/lib/dpkg/lock-frontend
+        - /var/cache/apt/archives/lock
+      ignore_errors: yes
 
   tasks:
-    - name: Ensure Docker prerequisites are installed
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+        lock_timeout: 300
+      register: apt_update
+      retries: 3
+      delay: 10
+      until: apt_update is succeeded
+
+    - name: Install Docker prerequisites
       ansible.builtin.apt:
         name:
           - apt-transport-https
@@ -37,21 +58,38 @@
           - gnupg
           - lsb-release
         state: present
-        update_cache: yes
         lock_timeout: 300
+      register: apt_prereqs
+      retries: 3
+      delay: 10
+      until: apt_prereqs is succeeded
 
-    - name: Add Docker GPG apt key
-      ansible.builtin.apt_key:
+    - name: Create directory for Docker GPG key
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Docker GPG key
+      ansible.builtin.get_url:
         url: https://download.docker.com/linux/ubuntu/gpg
-        state: present
+        dest: /tmp/docker.gpg
+        mode: '0644'
 
-    - name: Add Docker apt repository
+    - name: Add Docker GPG key
+      ansible.builtin.shell: |
+        gpg --dearmor < /tmp/docker.gpg > /etc/apt/keyrings/docker.gpg
+        chmod 644 /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Add Docker repository
       ansible.builtin.apt_repository:
-        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_facts['lsb']['codename'] }} stable"
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_facts['lsb']['codename'] }} stable"
         state: present
         filename: docker
 
-    - name: Ensure Docker and related packages are installed
+    - name: Install Docker packages
       ansible.builtin.apt:
         name:
           - docker-ce
@@ -61,42 +99,83 @@
           - docker-compose-plugin
         state: present
         update_cache: yes
+        lock_timeout: 300
+      register: apt_docker
+      retries: 3
+      delay: 10
+      until: apt_docker is succeeded
 
-    - name: Ensure Docker service is running and enabled
+    - name: Start and enable Docker service
       ansible.builtin.systemd:
         name: docker
         state: started
         enabled: yes
 
-    - name: Create application directory on the remote host
+    - name: Add current user to docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+      when: ansible_user != 'root'
+
+    - name: Create application directory
       ansible.builtin.file:
         path: /opt/app
         state: directory
         owner: root
         group: root
-        mode: "0755"
+        mode: '0755'
 
-    - name: Copy application files to the remote host
+    - name: Copy application files
       ansible.builtin.copy:
-        src: ../hello-world
-        dest: /opt/app
+        src: ../hello-world/
+        dest: /opt/app/
         owner: root
         group: root
-        mode: "0755"
+        mode: '0644'
 
-    - name: Build the Docker image
+    - name: Make sure app directory has correct permissions
+      ansible.builtin.file:
+        path: /opt/app
+        state: directory
+        recurse: yes
+        owner: root
+        group: root
+
+    - name: Build Docker image
       ansible.builtin.docker_image:
         name: hello-web-app
         build:
-          path: /opt/app/
+          path: /opt/app
+          pull: yes
         source: build
         state: present
+        force_source: yes
 
-    - name: Run the Docker container
+    - name: Stop existing container if running
+      ansible.builtin.docker_container:
+        name: hello-world-container
+        state: absent
+      ignore_errors: yes
+
+    - name: Run Docker container
       ansible.builtin.docker_container:
         name: hello-world-container
         image: hello-web-app
         state: started
-        restart_policy: always
+        restart_policy: unless-stopped
         ports:
           - "8000:8000"
+        healthcheck:
+          test: ["CMD", "curl", "-f", "http://localhost:8000"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+          start_period: 30s
+
+    - name: Wait for application to be ready
+      ansible.builtin.wait_for:
+        host: "{{ ansible_default_ipv4.address }}"
+        port: 8000
+        delay: 10
+        timeout: 60
