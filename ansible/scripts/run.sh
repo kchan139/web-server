@@ -11,4 +11,4 @@ ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook \
     -i "${HOST_IP}," \
     --private-key ~/.ssh/id_ed25519 \
     -u root \
-    "$(pwd)"/../webserver_playbook.yml
+    "$(dirname "$0")"/../webserver_playbook.yml
