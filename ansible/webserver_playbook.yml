@@ -1,0 +1,78 @@
+---
+- name: Provision Docker Host and Deploy Containerized Hello World Web App
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Ensure Docker prerequisites are installed
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG apt key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_facts['lsb']['codename'] }} stable"
+        state: present
+        filename: docker
+
+    - name: Ensure Docker and related packages are installed
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Ensure Docker service is running and enabled
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Create application directory on the remote host
+      ansible.builtin.file:
+        path: /opt/app
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy application files to the remote host
+      ansible.builtin.copy:
+        src: ../hello-world
+        dest: /opt/app       
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Build the Docker image
+      ansible.builtin.docker_image:
+        name: hello-web-app
+        build:
+          path: /opt/app/
+        source: build
+        state: present
+
+    - name: Run the Docker container
+      ansible.builtin.docker_container:
+        name: hello-world-container
+        image: hello-web-app
+        state: started
+        restart_policy: always
+        ports:
+          - "8000:8000"
