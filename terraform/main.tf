@@ -26,7 +26,7 @@ resource "digitalocean_droplet" "web" {
   ]
 
   provisioner "local-exec" {
-    command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '${self.ipv4_address},' --private-key ~/.ssh/id_ed25519 -u root ../ansible/webserver_playbook.yml"
+    command = "sleep 30 && ../ansible/scripts/run.sh ${self.ipv4_address}"
     when    = create
   }
 
